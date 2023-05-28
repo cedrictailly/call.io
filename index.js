@@ -1,161 +1,91 @@
 
-module.exports.CallIoRepository = class CallIoRepository
-{
-  constructor(name = 'default'){
-    this._name       = name;
-    this._procedures = {};
-    this._socket     = null;
-  }
+exports.publish = (socket, name, methods) => {
 
-  get name()       { return this._name; };
-  get socket()     { return this._socket; };
-  get procedures() { return Object.keys(this._procedures); }
+  if (!name.match(/^[a-z0-9\-]+$/))
+    throw new Error("Invalid package name format, must be lowercase letters, numbers and dashes only");
 
-  // --- //
+  if (!socket.callio) {
 
-  add(name, callback)
-  {
-    if ( this._procedures[name] )
-      throw new Error(`Procedure ${name} already defined`);
+    socket.callio = new Map();
 
-    this._procedures[name] = callback;
+    socket.on(
+      "callio:list",
+      callback => callback(Array.from(socket.callio.keys())),
+    );
 
-    return this;
-  }
+    socket.on("callio:subscribe", (name, callback) => {
 
-  remove(name){
-    delete this._procedures[name];
-    return this;
-  }
+      if (!socket.callio.has(name))
+        return callback("Package not published");
 
-  has(name){
-    return !!this._procedures[name];
-  }
+      const methods = socket.callio.get(name);
 
-  // --- //
+      Object.keys(methods).forEach(method => {
 
-  async connect(socket)
-  {
-    if ( this._socket )
-      throw new Error('Already connected');
+        socket.on("callio:call:" + name + ":" + method, async (...args) => {
 
-    this._socket = socket;
+          const callback = args.pop();
 
-    this._procedures = {};
-
-    (await this.call('@')).forEach(name => {
-      this._procedures[name] = this[name] = (...args) => this.call(name, ...args);
-    });
-
-    return {...this._procedures};
-  }
-
-  disconnect()
-  {
-    if ( !this._socket )
-      throw new Error('Not connected');
-
-    for ( var name in this._procedures )
-      delete this[name];
-
-    this._procedures = {};
-    this._socket     = null;
-
-    return this;
-  }
-
-  call(name, ...args)
-  {
-    return new Promise((resolve, reject) => {
-
-      if ( !this._socket )
-        return reject(new Error('Not linked'))
-
-      const id = require('shortid').generate();
-
-      this._socket.once('callio:' + id, result =>
-      {
-        if ( result.error )
-        {
-          if ( result.error.type == 'NOTFOUND' )
-            return reject(new Error('Procedure not found'));
-
-          return reject(new Error(result.error.name, result.error.message));
-        }
-
-        resolve(result.result);
+          try {
+            const result = methods[method](...args);
+            callback(null, result instanceof Promise ? await result : result);
+          } catch (error) {
+            callback(error.toString());
+          }
+        });
       });
 
-      this._socket.emit('callio:' + this._name, name, args, id);
+      callback(null, Object.keys(methods));
     });
-  }
 
-  // --- //
+  } else if (socket.callio.has(name))
+    throw new Error("Package already published");
 
-  publish(socket)
-  {
-    socket.on('callio:' + this._name, (name, args, id) =>
-    {
-      if ( name == '@' )
-        return socket.emit('callio:' + id, {
-          result: this.procedures,
+  socket.callio.set(name, methods);
+};
+
+exports.unpublish = (socket, name) => {
+
+  if (!socket.callio.has(name))
+    throw new Error("Package not published");
+
+  socket.callio.delete(name);
+};
+
+exports.list = socket => new Promise((resolve, reject) => {
+  socket.emit("callio:list", resolve);
+});
+
+exports.require = (socket, name) => new Promise((resolve, reject) => {
+
+  if (socket.callio?.has(name))
+    return resolve(socket.callio.get(name));
+
+  exports.list(socket).then(list => {
+
+    socket.emit("callio:subscribe", name, async (err, methods) => {
+
+      if (err)
+        return reject(new Error(err));
+
+      const result = {};
+
+      methods.forEach(method => {
+        result[method] = (...args) => new Promise((resolve, reject) => {
+          socket.emit(
+            "callio:call:" + name + ":" + method,
+            ...args,
+            (err, result) => err ? reject(new Error(err)) : resolve(result),
+          );
         });
-
-      if ( !this._procedures[name] )
-        return socket.emit('callio:' + id, {
-          error: {
-            type: 'NOTFOUND',
-          },
-        });
-
-      try
-      {
-        var returned = this._procedures[name](...args);
-      }
-      catch ( error )
-      {
-        socket.emit('callio:' + id, {
-          error: {
-            type   : 'EXCEPTION',
-            name   : error.name,
-            message: error.message,
-          },
-        });
-
-        return;
-      }
-
-      if ( returned instanceof Promise )
-        return returned.then(result => {
-          socket.emit('callio:' + id, {
-            result: result,
-          });
-        }).catch(error => {
-          socket.emit('callio:' + id, {
-            error : {
-              type   : 'EXCEPTION',
-              name   : error.name,
-              message: error.message,
-            },
-          });
-        });
-
-      socket.emit('callio:' + id, {
-        result: returned,
       });
+
+      if (!socket.callio)
+        socket.callio = new Map();
+
+      socket.callio.set(name, result);
+
+      resolve(result);
     });
-
-    return this;
-  }
-
-  unpublish(socket)
-  {
-    socket.off('callio:' + this._name);
-
-    this.remove('@', () => this.procedures);
-
-    return this;
-  }
-}
-
-module.exports.create = (name = 'default') => new module.exports.CallIoRepository(name);
+  });
+});

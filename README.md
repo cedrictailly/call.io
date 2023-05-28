@@ -1,7 +1,10 @@
 
 # Call.IO
 
-A remote procedure call system through Socket.IO
+[![npm version](https://badge.fury.io/js/take-easy.svg)](https://www.npmjs.com/package/call.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+A remote procedure call (RPC) module through Socket.IO.
 
 ## Installation
 
@@ -17,7 +20,7 @@ yarn add call.io
 
 ## Usage
 
-See example in the tests folder.
+You can see a use case in `/example`, here is an example.
 
 ### Server side
 
@@ -25,22 +28,17 @@ See example in the tests folder.
 
 const server = require('http').createServer();
 const io     = require('socket.io')(server);
-const callio = require('call.io').create();
+const callio = require('callio');
 
-// --- //
+const methods = {
+  log: message => {
+    console.log(message);
+    return "Hello from server";
+  },
+  plusOne: value => value + 1
+};
 
-callio.add('log', message =>
-{
-  console.log(message);
-
-  return "Hello from server";
-});
-
-callio.add('plusOne', value => value + 1);
-
-// --- //
-
-io.on('connection', socket => callio.publish(socket));
+io.on('connection', socket => callio.publish(socket, "methods", methods));
 
 server.listen(8080);
 
@@ -50,18 +48,20 @@ server.listen(8080);
 
 ```javascript
 
-const socket = require('socket.io-client')('http://127.0.0.1:8080/');
-const callio = require('call.io').create();
+(async () => {
 
-const { log, plusOne } = await callio.connect(socket);
+  const socket = require('socket.io-client')('http://127.0.0.1:8080/');
+  const callio = require('callio');
 
-console.log(await log("Hello from client"));
-console.log(await plusOne(10));
+  const { log, plusOne } = await callio.require(socket, "methods");
 
-console.log(await callio.log("Hello from client"));
-console.log(await callio.plusOne(10));
+  console.log(await log("Hello from client"));
+  console.log(await plusOne(10));
 
-console.log(await callio.call('log', "Hello from client"));
-console.log(await callio.call('plusOne', 10));
+})();
 
 ```
+
+## License
+
+This package is open source and available under the [MIT License](https://opensource.org/licenses/MIT).
